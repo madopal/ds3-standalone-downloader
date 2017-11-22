@@ -1133,57 +1133,61 @@ def get_ds3_job_chunks_in_order(client, job_id):
 
 def download_ds3_key(client, bucket, key, chunk_size, target_filename=None):
     params = {}
-    key_str = '/%s/%s' % (bucket, key)
     bytes_transferred = 0
+    file_size = 0
+
+    key_str = '/%s/%s' % (bucket, key)
 
     key_info = get_ds3_keys_info(client, bucket, key)
-    file_size = 0
-    for object in key_info:
+    if len(key_info) > 0:
+        for object in key_info:
+            file_size += int(object.get("Length"))
+        # start a bulk get
+        job_data = start_bulk_get(client, bucket, [key], "NORMAL")
         
-        file_size += int(object.get("Length"))
-    # start a bulk get
-    job_data = start_bulk_get(client, bucket, [key], "NORMAL")
-    
-    # get job chunks
-    params['job'] = job_data.get("JobId")
-    print "Getting chunks for job %s" % params['job']
-    data = get_ds3_job_chunks_in_order(client, params['job'])
+        # get job chunks
+        params['job'] = job_data.get("JobId")
+        print "Getting chunks for job %s" % params['job']
+        data = get_ds3_job_chunks_in_order(client, params['job'])
 
-    if not target_filename:
-        download_filename = key
+        if not target_filename:
+            download_filename = key
+        else:
+            download_filename = target_filename
+
+        if len(data):
+            with open(download_filename, "wb") as out_file:
+                # start downloading
+                for offset in sorted(data.keys()):
+                    params['offset'] = str(offset)
+                    with client.get(key_str, params=params, stream=True) as res:
+                        try:
+                            res.raise_for_status()
+                        except:
+                            print "Unable to find %s, %d %s" % (key_str, res.status_code, res.reason)
+                            running = False
+                        else:
+                            for chunk in res.iter_content(chunk_size=chunk_size):
+
+                                if len(chunk) < chunk_size:
+                                    running = False
+                                bytes_transferred += len(chunk)
+                                percent_done = (float(bytes_transferred) / float(file_size)) * 100.0
+                                sys.stdout.write("%6.02f%%\r" % percent_done)
+                                sys.stdout.flush()
+                                if bytes_transferred > file_size:
+                                    print
+                                    print "Warning, file size exceeded (%d/%d)" % (
+                                        bytes_transferred, file_size)
+                                    running = False
+                                out_file.write(chunk)
+                                retries = 0
+                            error = False
+
+        print "Download complete"
     else:
-        download_filename = target_filename
+        print "Unable to find {} in {}, please verify the file is actually there".format(bucket, key)
 
-    if len(data):
-        with open(download_filename, "wb") as out_file:
-            # start downloading
-            for offset in sorted(data.keys()):
-                params['offset'] = str(offset)
-                with client.get(key_str, params=params, stream=True) as res:
-                    try:
-                        res.raise_for_status()
-                    except:
-                        print "Unable to find %s, %d %s" % (key_str, res.status_code, res.reason)
-                        running = False
-                    else:
-                        for chunk in res.iter_content(chunk_size=chunk_size):
-
-                            if len(chunk) < chunk_size:
-                                running = False
-                            bytes_transferred += len(chunk)
-                            percent_done = (float(bytes_transferred) / float(file_size)) * 100.0
-                            sys.stdout.write("%6.02f%%\r" % percent_done)
-                            sys.stdout.flush()
-                            if bytes_transferred > file_size:
-                                print
-                                print "Warning, file size exceeded (%d/%d)" % (
-                                    bytes_transferred, file_size)
-                                running = False
-                            out_file.write(chunk)
-                            retries = 0
-                        error = False
-
-    print "Download complete"
 
 args = parse_cmd_args()
 
